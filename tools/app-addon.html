@@ -1,0 +1,87 @@
+<style>
+#sec{position:fixed;inset:0;z-index:90;background:rgba(6,10,18,.62);display:none;align-items:center;justify-content:center;padding:18px}
+#sec.on{display:flex}
+#sec .box{width:min(420px,100%);background:var(--card,#1b2536);color:var(--ink,#eef1f6);border:1px solid var(--bd,#2c3a52);border-radius:18px;padding:20px 20px 16px;box-shadow:0 20px 60px rgba(0,0,0,.4);font:15px/1.45 Inter,system-ui,sans-serif;max-height:90vh;overflow:auto}
+#sec h3{margin:0 0 4px;font-size:18px}
+#sec p.m{margin:0 0 14px;color:var(--muted,#93a0b5);font-size:13.5px}
+#sec .act{display:flex;flex-direction:column;gap:10px}
+#sec button{padding:12px 14px;border-radius:12px;border:1px solid var(--bd,#2c3a52);background:transparent;color:inherit;font:600 15px Inter,system-ui,sans-serif;cursor:pointer;text-align:left}
+#sec button.pri{background:var(--gold,#c9a25a);border-color:var(--gold,#c9a25a);color:#1a1408;text-align:center}
+#sec button.x{border:0;padding:8px;color:var(--muted,#93a0b5);text-align:center;font-weight:500}
+#sec label{display:block;font-size:12.5px;color:var(--muted,#93a0b5);margin:10px 0 4px}
+#sec input{width:100%;box-sizing:border-box;padding:11px 12px;border-radius:10px;border:1px solid var(--bd,#2c3a52);background:rgba(0,0,0,.18);color:inherit;font-size:15px}
+#sec .msg{min-height:18px;font-size:13.5px;margin:10px 0 0}
+#sec .msg.ok{color:#8fd19e}#sec .msg.ko{color:#e59a8f}
+#sec small a{color:var(--gold,#c9a25a)}
+</style>
+<div id="sec"><div class="box" id="secBox"></div></div>
+<script>
+(function(){
+  const REPO='graphikup/arbre-genealogique', FILE='vault/lock.json', ITER=600000;
+  const $s=id=>document.getElementById(id);
+  const b64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+  const tob64=buf=>{ const u=new Uint8Array(buf); let s=''; for(let i=0;i<u.length;i+=0x8000) s+=String.fromCharCode.apply(null,u.subarray(i,i+0x8000)); return btoa(s); };
+  function idb(){ return new Promise((res,rej)=>{ const r=indexedDB.open('arbre-vault',1); r.onupgradeneeded=()=>r.result.createObjectStore('k'); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); }
+  async function idbDel(k){ const db=await idb(); return new Promise(res=>{ const t=db.transaction('k','readwrite'); t.objectStore('k').delete(k); t.oncomplete=()=>res(); }); }
+  const lsGet=k=>{ try{ return localStorage.getItem(k); }catch(e){ return null; } };
+  const lsSet=(k,v)=>{ try{ v==null?localStorage.removeItem(k):localStorage.setItem(k,v); }catch(e){} };
+  async function kek(pw,salt,usage){ const base=await crypto.subtle.importKey('raw',new TextEncoder().encode(pw),'PBKDF2',false,['deriveKey']);
+    return crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations:ITER,hash:'SHA-256'},base,{name:'AES-GCM',length:256},false,[usage]); }
+
+  function home(){
+    $s('secBox').innerHTML=`<h3>Sécurité</h3><p class="m">L'arbre est chiffré : il ne s'ouvre qu'avec ton mot de passe.</p>
+      <div class="act"><button id="sPw">🔑  Changer le mot de passe</button><button id="sLock">🔒  Verrouiller sur cet appareil</button><button class="x" id="sX">Fermer</button></div>`;
+    $s('sPw').onclick=pwForm; $s('sLock').onclick=lock; $s('sX').onclick=close;
+  }
+  function pwForm(){
+    const tok=lsGet('arbre.ghtoken');
+    $s('secBox').innerHTML=`<h3>Changer le mot de passe</h3><p class="m">Le nouveau mot de passe s'appliquera à tous tes appareils d'ici une à deux minutes.</p>
+      <label>Mot de passe actuel</label><input id="pOld" type="password" autocomplete="current-password">
+      <label>Nouveau mot de passe</label><input id="pNew" type="password" autocomplete="new-password">
+      <label>Confirmer le nouveau mot de passe</label><input id="pNew2" type="password" autocomplete="new-password">
+      <div id="tokWrap" style="${tok?'display:none':''}"><label>Jeton GitHub (accès en écriture à ce dépôt)</label><input id="pTok" type="password" placeholder="github_pat_…" value="${tok?'':''}"></div>
+      ${tok?`<small style="display:block;margin-top:8px;color:var(--muted,#93a0b5)">Jeton GitHub enregistré sur cet appareil · <a href="#" id="tokEdit">le remplacer</a></small>`:''}
+      <p class="msg" id="pMsg"></p>
+      <div class="act" style="margin-top:6px"><button class="pri" id="pGo">Enregistrer</button><button class="x" id="pBack">Retour</button></div>`;
+    if(tok) $s('tokEdit').onclick=e=>{ e.preventDefault(); $s('tokWrap').style.display=''; };
+    $s('pBack').onclick=home; $s('pGo').onclick=changePw;
+  }
+  function msg(t,ok){ const m=$s('pMsg'); m.textContent=t; m.className='msg '+(ok?'ok':'ko'); }
+  async function changePw(){
+    const old=$s('pOld').value, nw=$s('pNew').value, nw2=$s('pNew2').value;
+    const tok=($s('pTok')&&$s('pTok').value.trim())||lsGet('arbre.ghtoken');
+    if(!old||!nw) return msg('Remplis les mots de passe.');
+    if(nw!==nw2) return msg('Les deux nouveaux mots de passe ne sont pas identiques.');
+    if(nw.length<4) return msg('Choisis au moins 4 caractères (une phrase est bien plus sûre).');
+    if(!tok) return msg('Il faut un jeton GitHub pour enregistrer le changement.');
+    $s('pGo').disabled=true; msg('Vérification…',true);
+    try{
+      const L=await (await fetch(FILE,{cache:'no-store'})).json();
+      let pkcs8; try{ pkcs8=await crypto.subtle.decrypt({name:'AES-GCM',iv:b64(L.iv)},await kek(old,b64(L.salt),'decrypt'),b64(L.data)); }catch(e){ throw new Error('Mot de passe actuel incorrect.'); }
+      const salt=crypto.getRandomValues(new Uint8Array(16)), iv=crypto.getRandomValues(new Uint8Array(12));
+      const data=await crypto.subtle.encrypt({name:'AES-GCM',iv},await kek(nw,salt,'encrypt'),pkcs8);
+      const body=JSON.stringify({v:1,kdf:'PBKDF2-SHA256',iter:ITER,salt:tob64(salt),iv:tob64(iv),data:tob64(data)},null,1)+'\n';
+      msg('Enregistrement sur GitHub…',true);
+      const api='https://api.github.com/repos/'+REPO+'/contents/'+FILE, H={'Authorization':'Bearer '+tok,'Accept':'application/vnd.github+json'};
+      const cur=await fetch(api+'?ref=main',{headers:H,cache:'no-store'});
+      if(cur.status===401) throw new Error('Jeton GitHub refusé (expiré ou mal copié).');
+      if(!cur.ok) throw new Error("Le jeton n'a pas accès au dépôt "+REPO+' ('+cur.status+').');
+      const sha=(await cur.json()).sha;
+      const put=await fetch(api,{method:'PUT',headers:H,body:JSON.stringify({message:'Changement du mot de passe',content:btoa(unescape(encodeURIComponent(body))),sha,branch:'main'})});
+      if(!put.ok) throw new Error(put.status===403||put.status===404?"Le jeton n'a pas le droit d'écrire dans le dépôt (permission « Contents : Read and write »).":'GitHub a refusé la modification ('+put.status+').');
+      lsSet('arbre.ghtoken',tok);
+      msg('Mot de passe changé. Il sera actif partout d\'ici une à deux minutes ; cet appareil reste déverrouillé.',true);
+      $s('pGo').style.display='none'; $s('pBack').textContent='Fermer'; $s('pBack').onclick=close;
+    }catch(e){ msg(e.message||String(e)); $s('pGo').disabled=false; }
+  }
+  async function lock(){
+    await idbDel('priv');
+    try{ navigator.serviceWorker.controller&&navigator.serviceWorker.controller.postMessage('lock'); }catch(e){}
+    location.replace('./');
+  }
+  function open(){ home(); $s('sec').classList.add('on'); }
+  function close(){ $s('sec').classList.remove('on'); }
+  $s('sec').addEventListener('click',e=>{ if(e.target.id==='sec') close(); });
+  const b=document.getElementById('bAdmin'); if(b){ b.onclick=open; b.setAttribute('aria-label','Sécurité'); b.title='Sécurité'; }
+})();
+</script>
